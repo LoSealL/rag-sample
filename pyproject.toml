@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sec-rag"
+dynamic = ["version"]
+description = "Local RAG system for code and documents"
+requires-python = ">=3.12"
+dependencies = [
+    "llama-index",
+    "llama-index-vector-stores-chroma",
+    "chromadb",
+    "sentence-transformers",
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "unstructured",
+    "tiktoken",
+    "python-dotenv",
+    "click",
+    "loguru",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+sec-rag-index = "sec_rag.cli:main_index"
+sec-rag-query = "sec_rag.cli:main_query"
+sec-rag-stats = "sec_rag.cli:main_stats"
+
+[[tool.uv.index]]
+url = "http://mirrors.aliyun.com/pypi/simple/"
+
+[dependency-groups]
+dev = [
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sec_rag.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["-q", "-s"]
+norecursedirs = ["tests/codebase"]
+
+[tool.pyright]
+include = ["src"]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    ".venv",
+]
+
+[tool.flake8]
+ignore = ["E203", "E231", "E241"]
+per-file-ignores = ["__init__.py:F401"]
+exclude = []
+max-line-length = 88
+max-complexity = 20
+count = true
+
+[tool.isort]
+profile = "black"
+skip_glob = []
+
+[tool.pylint."MAIN"]
+ignore-paths = ["tests"]
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+    "logging-fstring-interpolation",
+    "import-outside-toplevel",
+    "missing-module-docstring",
+    "no-member",
+    "no-name-in-module",
+    "fixme",
+    "R",
+    "I",
+]
+
+[tool.mypy]
+disable_error_code = ["assignment", "import-untyped", "return-value", "return"]
+exclude = []
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "I"]
+ignore = ["E203", "E231", "E241"]
