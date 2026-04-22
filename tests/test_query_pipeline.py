@@ -19,7 +19,7 @@ class TestFullPipelineMockedLlm:
         # Skip if OPENAI_API_KEY is not set (we'll mock the LLM)
 
         # Add some chunks to the index
-        from sec_rag.chunkers.code_chunker import Chunk, ChunkMetadata
+        from sec_rag.chunkers.base_chunker import Chunk, ChunkMetadata
 
         metadata = ChunkMetadata(
             file_path="/test/sample.py",
@@ -40,7 +40,7 @@ class TestFullPipelineMockedLlm:
             h = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
             return [(h % 100) / 100.0] * 384
 
-        index_store.add_chunks("code_index", [chunk], embed_fn=dummy_embed)
+        index_store.add_chunks("rag_index", [chunk], embed_fn=dummy_embed)
 
         # Create a mock embedding model
         mock_model = MagicMock()
@@ -161,7 +161,7 @@ class TestFullPipelineMockedLlm:
 
     def test_blocks_verbatim_code_output(self, index_store):
         """Pipeline should block responses that look like raw source dumps."""
-        from sec_rag.chunkers.code_chunker import Chunk, ChunkMetadata
+        from sec_rag.chunkers.base_chunker import Chunk, ChunkMetadata
 
         metadata = ChunkMetadata(
             file_path="/test/sample.cpp",
@@ -183,7 +183,7 @@ class TestFullPipelineMockedLlm:
             h = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
             return [(h % 100) / 100.0] * 384
 
-        index_store.add_chunks("code_index", [chunk], embed_fn=dummy_embed)
+        index_store.add_chunks("rag_index", [chunk], embed_fn=dummy_embed)
 
         mock_model = MagicMock()
         mock_model.encode.return_value.tolist.return_value = dummy_embed("query")
@@ -202,7 +202,7 @@ int foo() {
 
     def test_blocks_single_line_hdl_or_code_snippet(self, index_store):
         """Block short single-line code snippets without fenced blocks."""
-        from sec_rag.chunkers.code_chunker import Chunk, ChunkMetadata
+        from sec_rag.chunkers.base_chunker import Chunk, ChunkMetadata
 
         metadata = ChunkMetadata(
             file_path="/test/sample.v",
@@ -221,7 +221,7 @@ int foo() {
             h = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
             return [(h % 100) / 100.0] * 384
 
-        index_store.add_chunks("code_index", [chunk], embed_fn=dummy_embed)
+        index_store.add_chunks("rag_index", [chunk], embed_fn=dummy_embed)
 
         mock_model = MagicMock()
         mock_model.encode.return_value.tolist.return_value = dummy_embed("query")

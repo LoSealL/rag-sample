@@ -1,7 +1,7 @@
 # tests/test_index_store.py
 """Tests for the ChromaDB index store."""
 
-from sec_rag.chunkers.code_chunker import Chunk, ChunkMetadata
+from sec_rag.chunkers.base_chunker import Chunk, ChunkMetadata
 
 
 def _dummy_embed(text: str) -> list[float]:

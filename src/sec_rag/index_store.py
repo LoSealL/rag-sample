@@ -17,7 +17,7 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 from loguru import logger
 
-from sec_rag.chunkers.code_chunker import Chunk
+from sec_rag.chunkers.base_chunker import Chunk
 
 DEFAULT_PERSIST_DIR = ".rag_index"
 

@@ -3,7 +3,7 @@
 
 import pytest
 
-from sec_rag.chunkers.code_chunker import CodeChunker
+from sec_rag.chunkers.chunker_factory import ChunkerFactory as CodeChunker
 
 
 class TestPythonFunctionExtraction:

@@ -45,6 +45,8 @@ DEFAULT_RERANK_CANDIDATE_MULTIPLIER = int(
     os.environ.get("SEC_RAG_RERANK_CANDIDATE_MULTIPLIER", "4")
 )
 PROJECT_SUMMARY_COLLECTION = "project_index"
+PRIMARY_COLLECTION = "rag_index"
+LEGACY_COLLECTIONS = ["code_index", "doc_index"]
 
 SOURCE_EXPOSURE_BLOCK_MESSAGE = (
     "基于安全策略，我不能直接返回源码原文。"
@@ -60,6 +62,16 @@ class QueryResult:
     chunks: list[dict]
     total_prompt_tokens: int
     total_chunk_tokens: int
+
+
+@dataclass
+class RetrievalResult:
+    """Retrieval-only result without LLM generation."""
+
+    chunks: list[dict]
+    total_prompt_tokens: int
+    total_chunk_tokens: int
+    candidate_project_ids: list[str]
 
 
 class QueryPipeline:
@@ -131,6 +143,35 @@ class QueryPipeline:
             QueryResult with the LLM answer, retrieved chunks, and token counts.
         """
 
+        retrieval = self.retrieve(
+            query=query,
+            top_k=top_k,
+            filter_language=filter_language,
+            filter_chunk_type=filter_chunk_type,
+            project_top_k=project_top_k,
+        )
+
+        # Build the prompt and call LLM
+        prompt = self._build_prompt(retrieval.chunks, query)
+        answer = self._call_llm(prompt)
+
+        return QueryResult(
+            answer=answer,
+            chunks=retrieval.chunks,
+            total_prompt_tokens=retrieval.total_prompt_tokens,
+            total_chunk_tokens=retrieval.total_chunk_tokens,
+        )
+
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        filter_language: str | None = None,
+        filter_chunk_type: str | None = None,
+        project_top_k: int = 3,
+    ) -> RetrievalResult:
+        """Retrieve top chunks and prompt token estimate without calling LLM."""
+
         def embed(query_text: str) -> list[float]:
             return self.embedding_model.encode(query_text).tolist()
 
@@ -140,24 +181,12 @@ class QueryPipeline:
             project_top_k,
         )
 
-        code_results: list[dict] = []
-        doc_results: list[dict] = []
+        all_chunks: list[dict] = []
         if candidate_project_ids:
             for project_id in candidate_project_ids:
-                code_results.extend(
+                all_chunks.extend(
                     self.index_store.query(
-                        "code_index",
-                        query,
-                        embed,
-                        top_k=top_k,
-                        filter_language=filter_language,
-                        filter_chunk_type=filter_chunk_type,
-                        filter_project_id=project_id,
-                    )
-                )
-                doc_results.extend(
-                    self.index_store.query(
-                        "doc_index",
+                        PRIMARY_COLLECTION,
                         query,
                         embed,
                         top_k=top_k,
@@ -167,16 +196,8 @@ class QueryPipeline:
                     )
                 )
         else:
-            code_results = self.index_store.query(
-                "code_index",
-                query,
-                embed,
-                top_k=top_k,
-                filter_language=filter_language,
-                filter_chunk_type=filter_chunk_type,
-            )
-            doc_results = self.index_store.query(
-                "doc_index",
+            all_chunks = self.index_store.query(
+                PRIMARY_COLLECTION,
                 query,
                 embed,
                 top_k=top_k,
@@ -184,8 +205,33 @@ class QueryPipeline:
                 filter_chunk_type=filter_chunk_type,
             )
 
-        # Merge results by score (lower distance = more relevant)
-        all_chunks = code_results + doc_results
+        # Backward-compatible fallback: if unified collection has no hits,
+        # query legacy code/doc collections and merge results.
+        if not all_chunks:
+            logger.info(
+                "No hits in {}. Fallback to legacy collections: {}",
+                PRIMARY_COLLECTION,
+                ", ".join(LEGACY_COLLECTIONS),
+            )
+            for collection in LEGACY_COLLECTIONS:
+                try:
+                    all_chunks.extend(
+                        self.index_store.query(
+                            collection,
+                            query,
+                            embed,
+                            top_k=top_k,
+                            filter_language=filter_language,
+                            filter_chunk_type=filter_chunk_type,
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Legacy fallback query skipped for {}: {}",
+                        collection,
+                        exc,
+                    )
+
         all_chunks.sort(key=lambda x: x["score"])
 
         # Deduplicate by chunk_id; keep only the top-scoring duplicate.
@@ -202,21 +248,16 @@ class QueryPipeline:
         else:
             top_chunks = unique_chunks[:top_k]
 
-        # Build the prompt
+        # Build prompt for token accounting only.
         prompt = self._build_prompt(top_chunks, query)
-
-        # Count tokens in the prompt
         chunk_tokens = self._count_tokens(prompt)
         total_tokens = chunk_tokens + 60  # ~60 tokens for system/query framing
 
-        # Call the LLM
-        answer = self._call_llm(prompt)
-
-        return QueryResult(
-            answer=answer,
+        return RetrievalResult(
             chunks=top_chunks,
             total_prompt_tokens=total_tokens,
             total_chunk_tokens=chunk_tokens,
+            candidate_project_ids=candidate_project_ids,
         )
 
     def _get_reranker(self):

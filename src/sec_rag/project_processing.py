@@ -1,7 +1,5 @@
 """Project-level indexing helpers for summaries, sanitization, and checks."""
 
-from __future__ import annotations
-
 import hashlib
 import re
 from dataclasses import dataclass
@@ -9,7 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from sec_rag.chunkers.code_chunker import Chunk, ChunkMetadata
+from sec_rag.chunkers.base_chunker import Chunk, ChunkMetadata
 
 
 @dataclass(frozen=True)
