@@ -22,6 +22,17 @@
   - 硬失败策略：检测到敏感信息时立即抛出 `SensitiveInfoError`
   - 适用于所有已索引文档，包括项目摘要
 
+### 隐私模式（新功能）
+- **高密级文件标记**：用户可以指定某些文件为高密级
+- **四种匹配规则**：
+  - 精确路径匹配：`src/secrets/api_keys.h`
+  - 目录匹配：`src/crypto/`（该目录下所有文件）
+  - 正则匹配：`.*_secret\.py$`
+  - 扩展名匹配：`.pem`、`.key`
+- **索引时生成摘要**：通过 LLM 生成隐私安全摘要，描述功能但不暴露实现
+- **查询时自动替换**：隐私文件的原文绝不会进入 LLM Prompt，自动替换为摘要
+- **醒目日志**：涉及隐私文件时打印黄色警告日志（`[PRIVACY ALERT]`）
+
 ### 语言支持
 | 语言 | 分块方式 | 图谱支持 |
 |------|---------|---------|
@@ -140,7 +151,34 @@ Top relation types:
   INHERITS_FROM: 2
 ```
 
-### 步骤 2：查询实体
+### 步骤 2（可选）：配置隐私模式
+
+创建 `.privacy_config.json` 文件标记高密级文件：
+
+```json
+{
+  "exact_paths": ["src/secrets/api_keys.h", "config/production.yml"],
+  "directories": ["src/crypto/", "internal/"],
+  "patterns": [".*_secret\\.py$", ".*\\.token$"],
+  "extensions": [".pem", ".p12"],
+  "enabled": true
+}
+```
+
+匹配规则说明：
+- `exact_paths`：精确文件路径（支持后缀匹配）
+- `directories`：目录下所有文件（递归）
+- `patterns`：正则表达式匹配文件路径
+- `extensions`：按扩展名匹配
+
+索引时指定配置文件：
+```bash
+sec-rag-index --path ./src --languages cpp --privacy-config .privacy_config.json
+```
+
+系统会自动检测项目根目录下的 `.privacy_config.json`，无需手动指定。
+
+### 步骤 3：查询实体
 
 **查找函数调用链（谁调用了我）**：
 ```bash
@@ -166,7 +204,7 @@ sec-rag graph deps -f src/main.cpp
 sec-rag graph dependents -f include/utils.h
 ```
 
-### 步骤 3：影响范围分析
+### 步骤 4：影响范围分析
 
 分析修改某个实体会影响哪些代码：
 
@@ -186,7 +224,7 @@ Downstream (calls from Document):
   - validate (file: src/validator.cpp)
 ```
 
-### 步骤 4：导出可视化
+### 步骤 5：导出可视化
 
 **交互式 HTML（推荐）**：
 ```bash
@@ -218,7 +256,7 @@ sec-rag graph export -f gexf -o graph.gexf
 sec-rag graph export -f json -o graph.json
 ```
 
-### 步骤 5：Watch 模式（自动更新）
+### 步骤 6：Watch 模式（自动更新）
 
 持续监控目录，文件变更时自动增量更新知识图谱：
 
@@ -233,7 +271,7 @@ sec-rag graph watch -p ./src --languages cpp --interval 5.0
 
 按 `Ctrl+C` 停止监控。
 
-### 步骤 6：重新索引（增量更新）
+### 步骤 7：重新索引（增量更新）
 
 再次运行索引命令时，系统会自动：
 1. 计算每个文件的 SHA-256 哈希
@@ -278,6 +316,7 @@ sec-rag-index \
 | `--path` | （必需） | 项目目录，可多次指定 |
 | `--languages` | `python,c,doc` | `python`, `c`, `cpp`, `systemc`, `verilog`, `systemverilog`, `doc` |
 | `--batch-size` | `10` | 每批处理的文件数 |
+| `--privacy-config` | （自动检测） | 隐私配置文件路径（`.privacy_config.json`） |
 | `--api-base-url` | `http://localhost:8000` | 本地模型网关 URL |
 | `--llm-provider` | `auto` | `auto`, `openai`, `anthropic` |
 | `--llm-model` | `Qwen3.5-8B` | LLM 模型名 |
@@ -408,6 +447,33 @@ src/sec_rag/graph/
 
 ---
 
+## 隐私模式设计
+
+### 数据模型
+
+Chunk 元数据扩展：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `is_private` | `bool` | 是否为高密级文件 |
+| `privacy_summary` | `str` | LLM 生成的隐私安全摘要 |
+
+### 索引流程
+
+1. **配置加载**：自动检测 `.privacy_config.json` 或环境变量 `PRIVACY_CONFIG_PATH`
+2. **文件检测**：对每个文件调用 `PrivacyConfig.is_private()`
+3. **摘要生成**：对隐私文件调用 `generate_privacy_summary()`（LLM 生成）
+4. **元数据标记**：设置 `is_private=True`，存入 `privacy_summary`
+5. **原文保留**：原始内容仍存入向量库用于检索，但不会被发送给 LLM
+
+### 查询流程
+
+1. **检索阶段**：正常检索（隐私文件也参与向量相似度计算）
+2. **检测日志**：如果检索结果包含隐私文件，打印 `[PRIVACY ALERT]` 警告
+3. **Prompt 构建**：自动将隐私文件的 `text` 替换为 `privacy_summary`
+4. **LLM 调用**：Prompt 中绝不包含隐私文件原文
+
+---
+
 ## 测试
 
 ```bash
@@ -436,7 +502,8 @@ pytest tests/test_code_chunker.py::TestPythonFunctionExtraction
 | `tests/test_graph_phase2.py` | 深层关系 + 混合检索 | 10 |
 | `tests/test_graph_phase3.py` | 增量更新 + 抽象层 | 10 |
 | `tests/test_graph_phase4.py` | 哈希追踪 + Watch + HTML | 9 |
-| **总计** | | **66** |
+| `tests/test_privacy.py` | 隐私模式配置 + 摘要 + Prompt 替换 | 15 |
+| **总计** | | **81** |
 
 ---
 
@@ -470,6 +537,16 @@ pip install -e ".[dev]"
 **错误：tree-sitter 解析失败**
 - 确保已安装语言库：`pip install tree-sitter-python tree-sitter-c tree-sitter-cpp`
 - C++ 文件可能包含无法解析的宏，系统会自动回退到 LLM 提取
+
+**隐私文件被检索但摘要未显示**
+- 确认 `.privacy_config.json` 已正确放置并在索引时加载（查看 `[PRIVACY]` 日志）
+- 隐私摘要只在发送到 LLM 的 Prompt 中替换，数据库中仍存储原文用于检索
+- 使用 `--verbose` 查看详细的隐私检测日志
+
+**隐私摘要生成失败**
+- 确保 LLM 服务在索引时可用（摘要是在索引阶段生成的）
+- 检查 LLM 超时设置：`--llm-timeout 300`
+- 如 LLM 失败，系统会回退到默认模板摘要
 
 ---
 

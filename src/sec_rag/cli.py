@@ -180,6 +180,12 @@ def _index_options(func):
         show_default=True,
         help="LLM request timeout in seconds",
     )(func)
+    func = click.option(
+        "--privacy-config",
+        default=None,
+        show_default=True,
+        help="Path to privacy config JSON (default: auto-detect .privacy_config.json)",
+    )(func)
     return func
 
 
@@ -377,6 +383,7 @@ def _run_index(
     llm_provider: str,
     llm_model: str,
     llm_timeout: int,
+    privacy_config: str | None,
 ) -> int:
     configure_logging(verbose)
 
@@ -493,8 +500,23 @@ def _run_index(
         llm_max_chunks=chunk_llm_max_chunks,
     )
 
+    # Load privacy configuration
+    privacy_cfg = None
+    if privacy_config:
+        from sec_rag.privacy import PrivacyConfig
+
+        privacy_cfg = PrivacyConfig.from_file(privacy_config)
+        logger.info("Privacy config loaded: {}", privacy_cfg.summary())
+    else:
+        from sec_rag.privacy import PrivacyConfig
+
+        privacy_cfg = PrivacyConfig.auto_load(list(paths))
+        if privacy_cfg:
+            logger.info("Privacy config auto-loaded: {}", privacy_cfg.summary())
+
     total_chunks = 0
     files_processed = 0
+    privacy_files_count = 0
 
     # Initialize knowledge graph builder
     graph_builder = GraphBuilder()
@@ -552,13 +574,30 @@ def _run_index(
                     if not chunks:
                         continue
                     kind = chunker.document_kind_for_file(str(file_path))
+                    is_private = privacy_cfg.is_private(str(file_path)) if privacy_cfg else False
+
                     if chunker.is_cpp_file(str(file_path)):
                         chunks = [
                             sanitize_code_chunk(chunk, llm, project, checker)
                             for chunk in chunks
                         ]
+
                     for chunk in chunks:
                         annotate_chunk(chunk, project, document_kind=kind)
+
+                    if is_private:
+                        from sec_rag.project_processing import process_privacy_chunk
+
+                        privacy_files_count += 1
+                        logger.warning(
+                            "[PRIVACY] High-confidential file detected: {}",
+                            file_path,
+                        )
+                        chunks = [
+                            process_privacy_chunk(chunk, llm, project)
+                            for chunk in chunks
+                        ]
+
                     batch_chunks.extend(chunks)
                     project_documents.extend(chunks)
                     files_processed += 1
@@ -597,6 +636,12 @@ def _run_index(
     except Exception as e:
         logger.warning("Failed to save knowledge graph: {}", e)
 
+    if privacy_files_count:
+        logger.opt(colors=True).warning(
+            "<yellow>[PRIVACY]</yellow> {} high-confidential file(s) indexed with privacy-safe summaries. "
+            "Raw content will NOT be sent to LLM.",
+            privacy_files_count,
+        )
     logger.info(
         "Indexing complete: {} files, {} total chunks",
         files_processed,
@@ -666,8 +711,12 @@ def _run_query(
         logger.info("[DRY-RUN] --- Retrieved Chunks ---")
         for i, chunk in enumerate(retrieval.chunks, 1):
             metadata = chunk.get("metadata", {})
+            is_private = metadata.get("is_private", False)
+            prefix = "[PRIVACY] " if is_private else ""
             logger.info(
-                "[{}] score={:.4f} file={} type={} lang={} lines={}-{}",
+                "{}{}[{}] score={:.4f} file={} type={} lang={} lines={}-{} {}",
+                prefix,
+                " *** HIGH-CONFIDENTIAL *** " if is_private else "",
                 i,
                 float(chunk.get("score", 0.0)),
                 metadata.get("file_path", "?"),
@@ -675,6 +724,7 @@ def _run_query(
                 metadata.get("language", "?"),
                 metadata.get("line_start", "?"),
                 metadata.get("line_end", "?"),
+                "(privacy-safe summary only)" if is_private else "",
             )
 
         lang_counter: Counter[str] = Counter()
@@ -724,20 +774,27 @@ def _run_query(
         logger.info("--- Retrieved Chunks ---")
         for i, chunk in enumerate(result.chunks, 1):
             metadata = chunk["metadata"]
-            logger.info("[{}] {}", i, metadata.get("file_path", "?"))
+            is_private = metadata.get("is_private", False)
+            privacy_marker = " *** [HIGH-CONFIDENTIAL] ***" if is_private else ""
+            logger.info("[{}] {}{}", i, metadata.get("file_path", "?"), privacy_marker)
             logger.info(
                 "    Lines {}-{}",
                 metadata.get("line_start", "?"),
                 metadata.get("line_end", "?"),
             )
             logger.info(
-                "    Type: {} | Score: {:.4f}",
+                "    Type: {} | Score: {:.4f} {}",
                 metadata.get("chunk_type", "?"),
                 chunk["score"],
+                "(PRIVACY-SAFE SUMMARY ONLY)" if is_private else "",
             )
-            text = chunk["text"]
-            logger.info("    ---")
-            logger.info("    {}", f"{text[:300]}{'...' if len(text) > 300 else ''}")
+            if is_private:
+                summary = metadata.get("privacy_summary", "")
+                logger.info("    Privacy Summary: {}", summary[:300])
+            else:
+                text = chunk["text"]
+                logger.info("    ---")
+                logger.info("    {}", f"{text[:300]}{'...' if len(text) > 300 else ''}")
 
     # Show answer
     logger.success("--- Answer ---")

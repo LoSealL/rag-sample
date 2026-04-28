@@ -248,6 +248,21 @@ class QueryPipeline:
         else:
             top_chunks = unique_chunks[:top_k]
 
+        # Privacy detection: log warning if any private chunks are retrieved
+        private_chunks = [
+            c for c in top_chunks
+            if c.get("metadata", {}).get("is_private")
+        ]
+        if private_chunks:
+            logger.opt(colors=True).warning(
+                "<yellow>[PRIVACY ALERT]</yellow> Query retrieved {} high-confidential chunk(s): {}",
+                len(private_chunks),
+                ", ".join(
+                    f"{c['metadata'].get('file_path', '?')}:{c['metadata'].get('name', '?')}"
+                    for c in private_chunks
+                ),
+            )
+
         # Build prompt for token accounting only.
         prompt = self._build_prompt(top_chunks, query)
         chunk_tokens = self._count_tokens(prompt)
@@ -413,11 +428,25 @@ class QueryPipeline:
                 if language == "python"
                 else ("c" if language == "c" else language)
             )
-            text = chunk["text"]
+            is_private = metadata.get("is_private", False)
+            privacy_summary = metadata.get("privacy_summary", "")
+
+            # Substitute privacy-safe summary for private chunks
+            if is_private:
+                text = (
+                    f"[PRIVACY-SAFE SUMMARY] {privacy_summary}\n\n"
+                    f"[NOTE: The raw implementation of this high-confidential "
+                    f"component is withheld per privacy policy. "
+                    f"Only the summary above is provided.]"
+                )
+            else:
+                text = chunk["text"]
 
             header = (
                 f"Project: {project_name}\n" if project_name else ""
             ) + f"File: {file_path} (lines {line_start}-{line_end}), type={chunk_type}"
+            if is_private:
+                header += " [HIGH-CONFIDENTIAL]"
 
             context_parts.append(f"{header}\n```{lang_block}\n{text}\n```")
 

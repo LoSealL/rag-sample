@@ -23,6 +23,8 @@ class ChunkMetadata:
     source_language_family: str = ""
     declaration: str = ""
     semantic_summary: str = ""
+    is_private: bool = False
+    privacy_summary: str = ""
 
 
 @dataclass
@@ -52,6 +54,8 @@ class Chunk:
                 "source_language_family": self.metadata.source_language_family,
                 "declaration": self.metadata.declaration,
                 "semantic_summary": self.metadata.semantic_summary,
+                "is_private": self.metadata.is_private,
+                "privacy_summary": self.metadata.privacy_summary,
             },
         }
 

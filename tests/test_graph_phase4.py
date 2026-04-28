@@ -20,18 +20,20 @@ from sec_rag.graph.models import Entity, EntityId
 
 class TestFileHashIndex:
     def test_detect_change(self):
-        idx = FileHashIndex()
-        assert idx.is_changed("a.cpp", "hello") is True
-        idx.update("a.cpp", "hello")
-        assert idx.is_changed("a.cpp", "hello") is False
-        assert idx.is_changed("a.cpp", "world") is True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            idx = FileHashIndex(persist_path=f"{tmpdir}/hashes.json")
+            assert idx.is_changed("a.cpp", "hello") is True
+            idx.update("a.cpp", "hello")
+            assert idx.is_changed("a.cpp", "hello") is False
+            assert idx.is_changed("a.cpp", "world") is True
 
     def test_get_stale_files(self):
-        idx = FileHashIndex()
-        idx.update("a.cpp", "content_a")
-        idx.update("b.cpp", "content_b")
-        stale = idx.get_stale_files(["a.cpp"])
-        assert stale == ["b.cpp"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            idx = FileHashIndex(persist_path=f"{tmpdir}/hashes.json")
+            idx.update("a.cpp", "content_a")
+            idx.update("b.cpp", "content_b")
+            stale = idx.get_stale_files(["a.cpp"])
+            assert stale == ["b.cpp"]
 
     def test_persistence(self):
         with tempfile.TemporaryDirectory() as tmpdir:

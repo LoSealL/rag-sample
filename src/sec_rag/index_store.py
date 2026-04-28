@@ -121,6 +121,8 @@ class IndexStore:
                 "source_language_family": c.metadata.source_language_family,
                 "declaration": c.metadata.declaration,
                 "semantic_summary": c.metadata.semantic_summary,
+                "is_private": c.metadata.is_private,
+                "privacy_summary": c.metadata.privacy_summary,
             }
             for c in chunks
         ]

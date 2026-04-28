@@ -93,6 +93,8 @@ def annotate_chunk(
     sanitized: bool = False,
     declaration: str = "",
     semantic_summary: str = "",
+    is_private: bool = False,
+    privacy_summary: str = "",
 ) -> Chunk:
     """Attach project metadata to a chunk."""
     chunk.metadata.project_id = project.project_id
@@ -103,6 +105,8 @@ def annotate_chunk(
     chunk.metadata.source_language_family = _language_family(chunk.metadata.language)
     chunk.metadata.declaration = declaration
     chunk.metadata.semantic_summary = semantic_summary
+    chunk.metadata.is_private = is_private
+    chunk.metadata.privacy_summary = privacy_summary
     return chunk
 
 
@@ -269,6 +273,37 @@ def build_sanitized_document(
             f"declaration: {declaration}",
             f"summary: {semantic_summary}",
         ]
+    )
+
+
+def process_privacy_chunk(
+    chunk: Chunk,
+    llm,
+    project: ProjectContext,
+) -> Chunk:
+    """Mark a chunk as private and generate a privacy-safe summary.
+
+    The original text is preserved in the index for retrieval relevance,
+    but a privacy-safe summary is generated for LLM prompt substitution.
+    """
+    declaration = extract_declaration(chunk)
+    from sec_rag.privacy import generate_privacy_summary
+
+    privacy_summary = generate_privacy_summary(
+        chunk_text=chunk.text,
+        file_path=chunk.metadata.file_path,
+        llm=llm,
+        declaration=declaration,
+    )
+    return annotate_chunk(
+        chunk,
+        project,
+        document_kind=chunk.metadata.document_kind,
+        sanitized=chunk.metadata.sanitized,
+        declaration=declaration,
+        semantic_summary=chunk.metadata.semantic_summary,
+        is_private=True,
+        privacy_summary=privacy_summary,
     )
 
 
