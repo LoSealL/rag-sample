@@ -39,7 +39,7 @@
       <div class="actions">
         <button
           class="btn-primary"
-          :disabled="!store.canIndex"
+          :disabled="fileList.length === 0 || store.isIndexing || store.isIndexed"
           @click="startIndex"
         >
           🚀 开始建库
