@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .chunkers.chunker_factory import ChunkerFactory
+from .graph import GraphBuilder, GraphQuery, GraphStore, export_to_dot
 from .index_store import IndexStore
 from .project_processing import (
     SensitiveInfoChecker,
@@ -495,6 +496,9 @@ def _run_index(
     total_chunks = 0
     files_processed = 0
 
+    # Initialize knowledge graph builder
+    graph_builder = GraphBuilder()
+
     for project_path in paths:
         project = create_project_context(project_path)
         logger.info(
@@ -533,6 +537,17 @@ def _run_index(
                 try:
                     if not chunker.supports_file(str(file_path)):
                         continue
+                    
+                    # Build knowledge graph for C/C++ files
+                    if chunker.is_cpp_file(str(file_path)):
+                        try:
+                            with open(file_path, encoding="utf-8", errors="replace") as f:
+                                source = f.read()
+                            if source.strip():
+                                graph_builder.add_file(source, str(file_path), project.project_id)
+                        except Exception as ge:
+                            logger.debug("Graph extraction failed for {}: {}", file_path, ge)
+                    
                     chunks = chunker.chunk_file(str(file_path))
                     if not chunks:
                         continue
@@ -569,6 +584,18 @@ def _run_index(
                 embed_fn=embed_fn,
             )
             total_chunks += 1
+
+    # Save knowledge graph
+    try:
+        graph_builder.save()
+        graph_stats = graph_builder.stats()
+        logger.info(
+            "Knowledge graph saved: {} nodes, {} edges",
+            graph_stats["nodes"],
+            graph_stats["edges"],
+        )
+    except Exception as e:
+        logger.warning("Failed to save knowledge graph: {}", e)
 
     logger.info(
         "Indexing complete: {} files, {} total chunks",
@@ -780,6 +807,231 @@ def query(**kwargs) -> None:
 def stats(**kwargs) -> None:
     """Show statistics about the RAG index."""
     _exit_on_code(_run_stats(**kwargs))
+
+
+# ------------------------------------------------------------------
+# Graph subcommand group
+# ------------------------------------------------------------------
+
+@click.group(help="Code knowledge graph queries and exports.")
+def graph_cli() -> None:
+    """Query the code knowledge graph built during indexing."""
+
+
+@cli.group("graph")
+def graph_group() -> None:
+    """Code knowledge graph commands."""
+
+
+@graph_group.command("callers")
+@click.option("--name", "-n", required=True, help="Function name to query")
+@click.option("--project", "-p", default=None, help="Filter by project ID")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+@click.option("--max-depth", default=3, show_default=True)
+def graph_callers(name: str, project: str | None, index_dir: str, max_depth: int) -> None:
+    """Show functions that call the given function (upstream)."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    query = GraphQuery(store)
+    results = query.find_callers(name, project_id=project, max_depth=max_depth)
+    if not results:
+        click.echo(f"No callers found for '{name}'.")
+        return
+    click.echo(f"Callers of '{name}':")
+    for entity in results:
+        click.echo(f"  {entity.entity_type}: {entity.name} ({entity.file_path}:{entity.line_start})")
+
+
+@graph_group.command("callees")
+@click.option("--name", "-n", required=True, help="Function name to query")
+@click.option("--project", "-p", default=None, help="Filter by project ID")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+@click.option("--max-depth", default=3, show_default=True)
+def graph_callees(name: str, project: str | None, index_dir: str, max_depth: int) -> None:
+    """Show functions called by the given function (downstream)."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    query = GraphQuery(store)
+    results = query.find_callees(name, project_id=project, max_depth=max_depth)
+    if not results:
+        click.echo(f"No callees found for '{name}'.")
+        return
+    click.echo(f"Functions called by '{name}':")
+    for entity, _rel in results:
+        click.echo(f"  {entity.entity_type}: {entity.name} ({entity.file_path}:{entity.line_start})")
+
+
+@graph_group.command("hierarchy")
+@click.option("--name", "-n", required=True, help="Class name to query")
+@click.option("--project", "-p", default=None, help="Filter by project ID")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+def graph_hierarchy(name: str, project: str | None, index_dir: str) -> None:
+    """Show class inheritance hierarchy."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    query = GraphQuery(store)
+    result = query.class_hierarchy(name, project_id=project)
+    if not any(result.values()):
+        click.echo(f"No hierarchy found for '{name}'.")
+        return
+    if result["parents"]:
+        click.echo("Parents:")
+        for p in result["parents"]:
+            click.echo(f"  {p.name} ({p.file_path}:{p.line_start})")
+    if result["children"]:
+        click.echo("Children:")
+        for c in result["children"]:
+            click.echo(f"  {c.name} ({c.file_path}:{c.line_start})")
+    if result["siblings"]:
+        click.echo("Siblings:")
+        for s in result["siblings"]:
+            click.echo(f"  {s.name} ({s.file_path}:{s.line_start})")
+
+
+@graph_group.command("deps")
+@click.option("--file", "-f", required=True, help="File path to query")
+@click.option("--project", "-p", default=None, help="Filter by project ID")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+def graph_deps(file: str, project: str | None, index_dir: str) -> None:
+    """Show files included by the given file."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    query = GraphQuery(store)
+    results = query.file_dependencies(file, project_id=project)
+    if not results:
+        click.echo(f"No dependencies found for '{file}'.")
+        return
+    click.echo(f"Files included by '{file}':")
+    for entity in results:
+        click.echo(f"  {entity.name}")
+
+
+@graph_group.command("dependents")
+@click.option("--file", "-f", required=True, help="File path to query")
+@click.option("--project", "-p", default=None, help="Filter by project ID")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+def graph_dependents(file: str, project: str | None, index_dir: str) -> None:
+    """Show files that include the given file."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    query = GraphQuery(store)
+    results = query.file_dependents(file, project_id=project)
+    if not results:
+        click.echo(f"No dependents found for '{file}'.")
+        return
+    click.echo(f"Files that include '{file}':")
+    for entity in results:
+        click.echo(f"  {entity.name}")
+
+
+@graph_group.command("impact")
+@click.option("--name", "-n", required=True, help="Entity name to analyse")
+@click.option("--project", "-p", default=None, help="Filter by project ID")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+@click.option("--max-depth", default=3, show_default=True)
+def graph_impact(name: str, project: str | None, index_dir: str, max_depth: int) -> None:
+    """Analyse the impact of modifying an entity."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    query = GraphQuery(store)
+    result = query.impact_analysis(name, project_id=project, max_depth=max_depth)
+    if not any(result.values()):
+        click.echo(f"No impact data found for '{name}'.")
+        return
+    if result["direct_callers"]:
+        click.echo("Direct callers:")
+        for e in result["direct_callers"]:
+            click.echo(f"  {e.name} ({e.file_path}:{e.line_start})")
+    if result["transitive_deps"]:
+        click.echo("Transitive dependencies:")
+        for e in result["transitive_deps"]:
+            click.echo(f"  {e.name} ({e.file_path}:{e.line_start})")
+
+
+@graph_group.command("export")
+@click.option("--format", "fmt", type=click.Choice(["dot", "gexf", "json", "html"]), default="dot")
+@click.option("--output", "-o", required=True, help="Output file path")
+@click.option("--project", "-p", default=None, help="Filter by project ID")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+def graph_export(fmt: str, output: str, project: str | None, index_dir: str) -> None:
+    """Export the knowledge graph to DOT, GEXF, JSON or interactive HTML."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    if fmt == "dot":
+        export_to_dot(store, output, project_id=project)
+    elif fmt == "gexf":
+        from sec_rag.graph.exporter import export_to_gexf
+        export_to_gexf(store, output, project_id=project)
+    elif fmt == "json":
+        from sec_rag.graph.exporter import export_to_json
+        export_to_json(store, output)
+    elif fmt == "html":
+        from sec_rag.graph.html_exporter import export_to_html
+        export_to_html(store, output, project_id=project)
+    click.echo(f"Exported graph to {output}")
+
+
+@graph_group.command("watch")
+@click.option("--path", "-p", required=True, help="Directory to watch")
+@click.option("--languages", default="cpp", show_default=True, help="Comma-separated languages")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+@click.option("--interval", default=5.0, show_default=True, help="Polling interval in seconds")
+def graph_watch(path: str, languages: str, index_dir: str, interval: float) -> None:
+    """Watch a directory and auto-update the knowledge graph on changes.
+
+    Uses polling (no extra dependencies). Press Ctrl+C to stop.
+    """
+    import time
+    from pathlib import Path
+
+    from sec_rag.graph import GraphBuilder, NetworkXBackend, GraphStore, FileHashIndex
+
+    # Supported extensions
+    ext_map = {
+        "cpp": [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h"],
+        "c": [".c", ".h"],
+        "python": [".py"],
+    }
+    exts = set()
+    for lang in languages.split(","):
+        exts.update(ext_map.get(lang.strip().lower(), []))
+
+    store = GraphStore(backend=NetworkXBackend(persist_path=f"{index_dir}/knowledge_graph.json"))
+    hash_index = FileHashIndex(persist_path=f"{index_dir}/file_hashes.json")
+    builder = GraphBuilder(store=store, hash_index=hash_index)
+
+    root = Path(path)
+    click.echo(f"Watching {root} for changes... (Ctrl+C to stop)")
+
+    try:
+        while True:
+            files = []
+            for ext in exts:
+                for file_path in root.rglob(f"*{ext}"):
+                    try:
+                        source = file_path.read_text(encoding="utf-8", errors="replace")
+                        rel_path = str(file_path.relative_to(root))
+                        files.append((rel_path, source))
+                    except Exception:
+                        continue
+
+            stats = builder.build_project(files, project_id=root.name)
+            if any(stats.values()):
+                builder.save()
+                click.echo(
+                    f"Updated: +{stats['added']} ~{stats['updated']} -{stats['removed']} "
+                    f"(skipped {stats['skipped']})"
+                )
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        click.echo("\nStopped watching.")
+
+
+@graph_group.command("stats")
+@click.option("--index-dir", default=DEFAULT_INDEX_DIR, show_default=True)
+def graph_stats(index_dir: str) -> None:
+    """Show knowledge graph statistics."""
+    store = GraphStore(persist_path=f"{index_dir}/knowledge_graph.json")
+    stats = store.stats()
+    click.echo(f"Nodes: {stats['nodes']}")
+    click.echo(f"Edges: {stats['edges']}")
+    click.echo("Entities by type:")
+    for etype, count in sorted(stats.get("entities_by_type", {}).items()):
+        click.echo(f"  {etype}: {count}")
 
 
 if __name__ == "__main__":
