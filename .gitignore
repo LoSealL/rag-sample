@@ -34,3 +34,8 @@ ENV/
 .coverage
 htmlcov/
 uv.lock
+
+# Node.js / Web UI
+node_modules/
+web/frontend/node_modules/
+web/frontend/dist/
